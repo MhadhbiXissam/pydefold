@@ -1,5 +1,5 @@
 # pydefold
-defold proto compiled to python
+defold proto compiled to python (check branches of this repo for already build protofiles , is under folder "defoldsdk")
 
 
 
