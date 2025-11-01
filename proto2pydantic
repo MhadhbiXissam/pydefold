@@ -1,0 +1,99 @@
+from google.protobuf.descriptor import FieldDescriptor
+from typing import Optional, List, Annotated, Dict, Type
+from pydantic import create_model, Field
+from google.protobuf.message import Message
+from enum import Enum
+from defoldsdk import sdk
+
+PROTOBUF_TYPE_TO_PYTHON_TYPE = {
+    FieldDescriptor.TYPE_DOUBLE: float,
+    FieldDescriptor.TYPE_FLOAT: float,
+    FieldDescriptor.TYPE_INT64: int,
+    FieldDescriptor.TYPE_UINT64: int,
+    FieldDescriptor.TYPE_INT32: int,
+    FieldDescriptor.TYPE_FIXED64: int,
+    FieldDescriptor.TYPE_FIXED32: int,
+    FieldDescriptor.TYPE_BOOL: bool,
+    FieldDescriptor.TYPE_STRING: str,
+    FieldDescriptor.TYPE_BYTES: bytes,
+    FieldDescriptor.TYPE_UINT32: int,
+    FieldDescriptor.TYPE_ENUM: int,
+    FieldDescriptor.TYPE_SFIXED32: int,
+    FieldDescriptor.TYPE_SFIXED64: int,
+    FieldDescriptor.TYPE_SINT32: int,
+    FieldDescriptor.TYPE_SINT64: int,
+}
+
+class ObjectBuilder:
+    def __init__(self, typ):
+        self.proto = typ
+        self.models_cache: Dict[Type, Type] = {}
+
+    def build(self):
+        return self._build_model(self.proto)
+
+    def _build_model(self, proto):
+        # Cache to avoid recursion issues
+        if proto in self.models_cache:
+            return self.models_cache[proto]
+
+        attrs = {}
+        self._handle_enums(proto, attrs)
+        self._handle_fields(proto, attrs)
+
+        model = create_model(proto.__name__, **attrs)
+        self.models_cache[proto] = model
+        return model
+
+    def _handle_enums(self, proto, attrs):
+        descriptor = proto.DESCRIPTOR
+        for enum_type in descriptor.enum_types_by_name.values():
+            enumclass = Enum(enum_type.name, {v.name: v.number for v in enum_type.values})
+            attrs[enum_type.name] = (enumclass, ...)
+
+    def _handle_fields(self, proto, attrs):
+        descriptor = proto.DESCRIPTOR
+        for name, field in descriptor.fields_by_name.items():
+            py_type = None
+            default_value = field.default_value if field.has_default_value else None
+
+            if field.type == FieldDescriptor.TYPE_MESSAGE:
+                nested_model = self._build_model(field.message_type._concrete_class)
+                py_type = nested_model
+            else:
+                py_type = PROTOBUF_TYPE_TO_PYTHON_TYPE.get(field.type)
+
+            # Wrap repeated fields in List
+            if field.is_repeated:
+                py_type = List[py_type]
+                default_value = default_value if default_value is not None else []
+
+            # Wrap optional if field is not required
+            if not self.is_field_required(field):
+                py_type = Optional[py_type]
+                default_value = default_value if default_value is not None else None
+
+            # Required fields: default = Ellipsis
+            if self.is_field_required(field) and not field.is_repeated:
+                attrs[name] = (py_type, ...)
+            else:
+                attrs[name] = (py_type, default_value)
+
+    def is_field_required(self, field: FieldDescriptor) -> bool:
+        """Return True if protobuf field must be provided by the user."""
+        if field.label == FieldDescriptor.LABEL_REQUIRED:
+            return True
+        if field.label == FieldDescriptor.LABEL_OPTIONAL and not field.has_default_value:
+            return not getattr(field, "has_presence", False)
+        return False
+
+
+
+
+if __name__ == "__main__" : 
+    for name in dir(sdk):
+        obj = getattr(sdk, name)
+        if isinstance(obj, type) and issubclass(obj, Message):
+            model = ObjectBuilder(obj).build()
+
+
